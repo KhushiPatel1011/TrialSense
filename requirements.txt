@@ -7,3 +7,4 @@ lxml>=5.0,<6.0
 tqdm>=4.66,<5.0
 pytest>=8.0,<10.0
 streamlit>=1.40,<2
+huggingface_hub>=0.30,<1
