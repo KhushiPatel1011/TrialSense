@@ -1,3 +1,4 @@
+
 import argparse
 import re
 
@@ -14,6 +15,7 @@ from src.retrieval.search_bm25 import (
 
 def extract_patient_age(text):
     """Extract an explicitly stated patient age."""
+
     patterns = [
         r"\b(\d{1,3})\s*[- ]year[- ]old\b",
         r"\b(\d{1,3})\s*years?\s+of\s+age\b",
@@ -22,8 +24,10 @@ def extract_patient_age(text):
 
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
+
         if match:
             age = int(match.group(1))
+
             if 0 <= age <= 120:
                 return age
 
@@ -31,30 +35,77 @@ def extract_patient_age(text):
 
 
 def extract_patient_sex(text):
-    """Extract explicitly stated patient sex descriptors."""
-    patterns = [
-        (r"\b(?:male|man|boy)\b", "Male"),
-        (r"\b(?:female|woman|girl)\b", "Female"),
+    """
+    Extract the patient's stated sex descriptor.
+
+    Prioritize descriptions attached to the patient
+    rather than unrelated people mentioned later.
+
+    This is a limited rule-based extractor, not a
+    comprehensive clinical NLP model.
+    """
+
+    text = " ".join(text.split())
+
+    # First recognize explicit patient descriptions.
+    patient_patterns = [
+        (
+            r"\b(?:a|an|the)\s+"
+            r"(?:\d{1,3}[- ]year[- ]old\s+)?"
+            r"(?:male|man|boy|female|woman|girl)\b"
+        ),
+        (
+            r"\b(?:male|female)\s+patient\b"
+        ),
+        (
+            r"\bpatient\s+is\s+(?:male|female)\b"
+        ),
+        (
+            r"\bpatient\s+identifies\s+as\s+"
+            r"(?:male|female)\b"
+        ),
     ]
 
-    matches = []
+    for pattern in patient_patterns:
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        )
 
-    for pattern, label in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            matches.append(label)
+        if match:
+            matched_text = match.group(0).lower()
 
-    # Avoid guessing when descriptors conflict.
-    return matches[0] if len(matches) == 1 else None
+            if re.search(
+                r"\b(female|woman|girl)\b",
+                matched_text,
+            ):
+                return "Female"
+
+            if re.search(
+                r"\b(male|man|boy)\b",
+                matched_text,
+            ):
+                return "Male"
+
+    # If the patient is not explicitly described,
+    # avoid guessing based on mentions of other people.
+    return None
 
 
 def parse_age_limit(value):
-    """Convert trial age values to years."""
+    """Convert structured trial age limits into years."""
+
     if not value:
         return None
 
     value = value.strip().lower()
 
-    if value in ("n/a", "not applicable", "unknown"):
+    if value in (
+        "n/a",
+        "not applicable",
+        "unknown",
+    ):
         return None
 
     match = re.fullmatch(
@@ -85,59 +136,117 @@ def parse_age_limit(value):
 
 
 def evaluate_demographics(patient_age, patient_sex, trial):
-    """Check age and sex without inferring clinical eligibility."""
+    """
+    Evaluate structured age and sex requirements.
+
+    PASS only confirms that checked demographic
+    requirements are satisfied.
+    """
 
     checks = []
     conflicts = []
     unknowns = []
 
-    min_age = parse_age_limit(trial.get("minimum_age"))
-    max_age = parse_age_limit(trial.get("maximum_age"))
+    min_age = parse_age_limit(
+        trial.get("minimum_age")
+    )
 
+    max_age = parse_age_limit(
+        trial.get("maximum_age")
+    )
+
+    min_raw = (
+        trial.get("minimum_age") or ""
+    ).strip().lower()
+
+    max_raw = (
+        trial.get("maximum_age") or ""
+    ).strip().lower()
+
+    # Age screening
     if patient_age is None:
-        unknowns.append("Patient age not established")
-
-    elif min_age is not None and patient_age < min_age:
-        conflicts.append(
-            f"Patient age {patient_age} is below "
-            f"minimum {min_age:g} years"
+        unknowns.append(
+            "Patient age not established"
         )
-
-    elif max_age is not None and patient_age > max_age:
-        conflicts.append(
-            f"Patient age {patient_age} exceeds "
-            f"maximum {max_age:g} years"
-        )
-
-    elif min_age is None and max_age is None:
-        if (
-            trial.get("minimum_age", "").strip().lower()
-            in ("", "n/a")
-            and trial.get("maximum_age", "").strip().lower()
-            in ("", "n/a")
-        ):
-            checks.append("No explicit numeric age restriction")
-        else:
-            unknowns.append("Trial age limits could not be parsed")
 
     else:
-        checks.append("Age requirement satisfied")
+        if (
+            min_raw not in ("", "n/a")
+            and min_age is None
+        ):
+            unknowns.append(
+                "Minimum age could not be parsed"
+            )
 
-    trial_sex = (trial.get("gender") or "").strip().lower()
+        if (
+            max_raw not in ("", "n/a")
+            and max_age is None
+        ):
+            unknowns.append(
+                "Maximum age could not be parsed"
+            )
+
+        if (
+            min_age is not None
+            and patient_age < min_age
+        ):
+            conflicts.append(
+                f"Patient age {patient_age} is below "
+                f"minimum {min_age:g} years"
+            )
+
+        elif (
+            max_age is not None
+            and patient_age > max_age
+        ):
+            conflicts.append(
+                f"Patient age {patient_age} exceeds "
+                f"maximum {max_age:g} years"
+            )
+
+        elif (
+            min_age is None
+            and max_age is None
+            and min_raw in ("", "n/a")
+            and max_raw in ("", "n/a")
+        ):
+            checks.append(
+                "No explicit numeric age restriction"
+            )
+
+        elif not any(
+            "age" in item.lower()
+            for item in unknowns
+        ):
+            checks.append(
+                "Age requirement satisfied"
+            )
+
+    # Sex screening
+    trial_sex = (
+        trial.get("gender") or ""
+    ).strip().lower()
 
     if patient_sex is None:
-        unknowns.append("Patient sex not established")
+        unknowns.append(
+            "Patient sex not established"
+        )
 
     elif trial_sex in ("all", "both"):
-        checks.append("Trial accepts all sexes")
+        checks.append(
+            "Trial accepts all sexes"
+        )
 
     elif trial_sex in ("male", "female"):
         if patient_sex.lower() == trial_sex:
-            checks.append("Sex requirement satisfied")
+            checks.append(
+                "Sex requirement satisfied"
+            )
         else:
             conflicts.append(
                 f"Patient sex {patient_sex} conflicts "
-                f"with trial requirement {trial_sex.title()}"
+                f"with trial requirement "
+                f"{trial_sex.title()}"
             )
 
     else:
@@ -147,8 +256,10 @@ def evaluate_demographics(patient_age, patient_sex, trial):
 
     if conflicts:
         status = "CONFLICT"
+
     elif unknowns:
         status = "UNKNOWN"
+
     else:
         status = "PASS"
 
@@ -162,82 +273,160 @@ def evaluate_demographics(patient_age, patient_sex, trial):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="TrialSense demographic eligibility screening"
+        description=(
+            "TrialSense demographic eligibility screening"
+        )
     )
-    parser.add_argument("--topic", type=int, default=1)
-    parser.add_argument("--top-k", type=int, default=3)
+
+    parser.add_argument(
+        "--topic",
+        type=int,
+        default=1,
+    )
+
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=3,
+    )
 
     args = parser.parse_args()
 
-    patient = load_patient_topic(args.topic)
-    judgments = load_relevance_judgments(args.topic)
+    patient = load_patient_topic(
+        args.topic
+    )
 
-    patient_age = extract_patient_age(patient)
-    patient_sex = extract_patient_sex(patient)
+    judgments = load_relevance_judgments(
+        args.topic
+    )
+
+    patient_age = extract_patient_age(
+        patient
+    )
+
+    patient_sex = extract_patient_sex(
+        patient
+    )
 
     retrieved, latency = search_bm25(
-        patient, top_k=args.top_k
+        patient,
+        top_k=args.top_k,
     )
 
     trial_ids = {
-        result["nct_id"] for result in retrieved
+        result["nct_id"]
+        for result in retrieved
     }
 
-    trials = load_selected_trials(trial_ids)
+    trials = load_selected_trials(
+        trial_ids
+    )
 
     print("=" * 70)
-    print("TRIALSENSE - STRUCTURED ELIGIBILITY SCREENING")
+    print(
+        "TRIALSENSE - STRUCTURED ELIGIBILITY SCREENING"
+    )
     print("=" * 70)
 
-    print(f"\nPatient topic: {args.topic}")
-    print(f"Extracted age: {patient_age}")
-    print(f"Extracted sex: {patient_sex}")
-    print(f"Retrieval latency: {latency * 1000:.2f} ms")
+    print(
+        f"\nPatient topic: {args.topic}"
+    )
 
-    for rank, result in enumerate(retrieved, start=1):
+    print(
+        f"Extracted age: {patient_age}"
+    )
+
+    print(
+        f"Extracted sex: {patient_sex}"
+    )
+
+    print(
+        f"Retrieval latency: "
+        f"{latency * 1000:.2f} ms"
+    )
+
+    for rank, result in enumerate(
+        retrieved,
+        start=1,
+    ):
         nct_id = result["nct_id"]
         trial = trials.get(nct_id)
 
         print("\n" + "-" * 70)
-        print(f"RANK {rank}: {nct_id}")
+        print(
+            f"RANK {rank}: {nct_id}"
+        )
         print("-" * 70)
 
         if trial is None:
-            print("Trial record missing")
+            print(
+                "Trial record missing"
+            )
             continue
 
         evidence = evaluate_demographics(
-            patient_age, patient_sex, trial
+            patient_age,
+            patient_sex,
+            trial,
         )
 
-        grade = judgments.get(nct_id)
+        grade = judgments.get(
+            nct_id
+        )
 
-        print(f"Title: {trial['title']}")
-        print(f"TREC reference label: {LABELS[grade]}")
-        print(f"Trial age range: "
-              f"{trial['minimum_age']} to {trial['maximum_age']}")
-        print(f"Trial sex requirement: {trial['gender']}")
-        print(f"Demographic screen: {evidence['status']}")
+        print(
+            f"Title: {trial['title']}"
+        )
+
+        print(
+            "TREC reference label: "
+            f"{LABELS[grade]}"
+        )
+
+        print(
+            f"Trial age range: "
+            f"{trial['minimum_age']} "
+            f"to {trial['maximum_age']}"
+        )
+
+        print(
+            "Trial sex requirement: "
+            f"{trial['gender']}"
+        )
+
+        print(
+            "Demographic screen: "
+            f"{evidence['status']}"
+        )
 
         for check in evidence["checks"]:
-            print(f"  [PASS] {check}")
+            print(
+                f"  [PASS] {check}"
+            )
 
         for conflict in evidence["conflicts"]:
-            print(f"  [CONFLICT] {conflict}")
+            print(
+                f"  [CONFLICT] {conflict}"
+            )
 
         for unknown in evidence["unknowns"]:
-            print(f"  [UNKNOWN] {unknown}")
+            print(
+                f"  [UNKNOWN] {unknown}"
+            )
 
         print(
             "Clinical eligibility: NOT DETERMINED"
         )
+
         print(
-            "Note: Other inclusion/exclusion criteria "
-            "have not been automatically assessed."
+            "Note: Other inclusion/exclusion "
+            "criteria have not been automatically assessed."
         )
 
     print("\n" + "=" * 70)
-    print("DEMOGRAPHIC SCREENING COMPLETE")
+    print(
+        "DEMOGRAPHIC SCREENING COMPLETE"
+    )
     print("=" * 70)
 
 

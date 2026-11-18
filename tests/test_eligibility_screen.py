@@ -13,7 +13,6 @@ def make_trial(
     maximum_age="65 Years",
     gender="All",
 ):
-    """Create a sample trial for unit testing."""
     return {
         "minimum_age": minimum_age,
         "maximum_age": maximum_age,
@@ -41,9 +40,38 @@ def test_extract_patient_sex():
     ) == "Female"
 
 
-def test_ambiguous_sex():
-    # The parser should not guess when both descriptors occur.
-    text = "A female patient reports multiple male partners."
+def test_patient_sex_with_other_people():
+    text = (
+        "A 32-year-old woman has multiple male partners."
+    )
+    assert extract_patient_sex(text) == "Female"
+
+
+def test_explicit_female_patient():
+    text = (
+        "A female patient reports multiple male partners."
+    )
+    assert extract_patient_sex(text) == "Female"
+
+
+def test_explicit_male_patient():
+    text = (
+        "A male patient reports a female partner."
+    )
+    assert extract_patient_sex(text) == "Male"
+
+
+def test_unrelated_sex_mention():
+    text = (
+        "The patient's male partner attended the visit."
+    )
+    assert extract_patient_sex(text) is None
+
+
+def test_missing_sex_descriptor():
+    text = (
+        "A 45-year-old patient presents with headache."
+    )
     assert extract_patient_sex(text) is None
 
 
@@ -145,6 +173,22 @@ def test_missing_trial_sex_requirement():
     result = evaluate_demographics(
         patient_age=30,
         patient_sex="Male",
+        trial=trial,
+    )
+
+    assert result["status"] == "UNKNOWN"
+
+
+def test_unparseable_age_limit():
+    trial = make_trial(
+        minimum_age="Adults",
+        maximum_age="N/A",
+        gender="All",
+    )
+
+    result = evaluate_demographics(
+        patient_age=30,
+        patient_sex="Female",
         trial=trial,
     )
 
